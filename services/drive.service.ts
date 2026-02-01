@@ -1,155 +1,177 @@
-// services/drive.service.ts
-import { getAuth } from "firebase/auth";
+import { DriveConfig } from '../types';
 
-const DRIVE_API = "https://www.googleapis.com/drive/v3";
-const UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files";
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+const SHEET_MIME = 'application/vnd.google-apps.spreadsheet';
 
-/**
- * Obtiene el accessToken OAuth de Google del usuario autenticado
- */
-async function getGoogleAccessToken(): Promise<string> {
-  const auth = getAuth();
-  const user = auth.currentUser;
-
-  if (!user) {
-    throw new Error("Usuario no autenticado");
-  }
-
-  const tokenResult = await user.getIdTokenResult();
-  const providerData = user.providerData.find(
-    (p) => p.providerId === "google.com"
-  );
-
-  if (!providerData) {
-    throw new Error("El usuario no inició sesión con Google");
-  }
-
-  // @ts-expect-error Firebase expone accessToken internamente
-  const accessToken = auth.currentUser?.stsTokenManager?.accessToken;
-
-  if (!accessToken) {
-    throw new Error("No se pudo obtener accessToken de Google");
-  }
-
-  return accessToken;
+interface DriveFileBody {
+    name: string;
+    mimeType: string;
+    parents?: string[];
 }
 
-/**
- * Busca una carpeta por nombre dentro de un parent
- */
-async function findFolder(
-  name: string,
-  parentId: string | null,
-  accessToken: string
-): Promise<string | null> {
-  const qParts = [
-    `mimeType='application/vnd.google-apps.folder'`,
-    `name='${name.replace("'", "\\'")}'`,
-    "trashed=false",
-  ];
+export const initializeDriveStructure = async (accessToken: string): Promise<DriveConfig> => {
+  try {
+    // 1. Root: sistema-gestion-cobros
+    let rootId = await findFile(accessToken, `name = 'sistema-gestion-cobros' and mimeType = '${FOLDER_MIME}' and trashed = false`);
+    if (!rootId) rootId = await createFile(accessToken, 'sistema-gestion-cobros', FOLDER_MIME);
 
-  if (parentId) {
-    qParts.push(`'${parentId}' in parents`);
-  }
+    // 2. Subfolders
+    let cobrosId = await findFile(accessToken, `name = 'cobros' and '${rootId}' in parents and mimeType = '${FOLDER_MIME}' and trashed = false`);
+    if (!cobrosId) cobrosId = await createFile(accessToken, 'cobros', FOLDER_MIME, [rootId]);
 
-  const q = qParts.join(" and ");
+    let ingresosId = await findFile(accessToken, `name = 'ingresos' and '${rootId}' in parents and mimeType = '${FOLDER_MIME}' and trashed = false`);
+    if (!ingresosId) ingresosId = await createFile(accessToken, 'ingresos', FOLDER_MIME, [rootId]);
 
-  const res = await fetch(
-    `${DRIVE_API}/files?q=${encodeURIComponent(q)}&fields=files(id,name)`,
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
+    // 3. Sheet Global
+    let sheetId = await findFile(accessToken, `name = 'registro-general-cobros' and '${rootId}' in parents and mimeType = '${SHEET_MIME}' and trashed = false`);
+    if (!sheetId) {
+      sheetId = await createFile(accessToken, 'registro-general-cobros', SHEET_MIME, [rootId]);
+      await initializeSheetFormat(accessToken, sheetId);
     }
-  );
 
+    return { rootId, cobrosId, ingresosId, sheetId };
+  } catch (error) {
+    console.error('FATAL: Drive Initialization Failed', error);
+    throw new Error('No se pudo inicializar la estructura de Google Drive. Verifique permisos.');
+  }
+};
+
+export const uploadFileToDrive = async (token: string, file: File, folderId: string): Promise<{ id: string, link: string }> => {
+  // Sanitize filename to avoid weird character issues
+  const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+  const metadata = { name: `${Date.now()}_${safeName}`, parents: [folderId] };
+  
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  form.append('file', file);
+
+  try {
+    // 1. Upload - CRITICAL FIX: Request thumbnailLink for direct image access
+    const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink,thumbnailLink', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form
+    });
+
+    if (!res.ok) {
+        const err = await res.json();
+        throw new Error(`Drive Upload Failed: ${err.error?.message || res.statusText}`);
+    }
+    
+    const data = await res.json();
+    const fileId = data.id;
+
+    // 2. SET PERMISSIONS
+    try {
+        await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
+          method: 'POST',
+          headers: { 
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            role: 'reader',
+            type: 'anyone'
+          })
+        });
+    } catch (permError) {
+        console.warn("Permission Warning: Could not set public permission on file.", permError);
+    }
+
+    // GOLD FIX: Use thumbnailLink modified to high-res (=s1024) for direct image rendering.
+    // webViewLink is an HTML page (not safe for <img src>).
+    // If thumbnailLink is missing (non-image files), fallback to webViewLink.
+    let finalLink = data.webViewLink;
+    if (data.thumbnailLink) {
+        // Replace default size (=s220) with high res (=s2048)
+        finalLink = data.thumbnailLink.replace(/=s\d+$/, '=s2048');
+    }
+
+    return { id: fileId, link: finalLink };
+  } catch (error) {
+      console.error("Upload Error:", error);
+      throw error;
+  }
+};
+
+// Helpers
+async function findFile(token: string, q: string): Promise<string | null> {
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok) return null;
   const data = await res.json();
-  return data.files?.[0]?.id ?? null;
+  return data.files?.[0]?.id || null;
 }
 
-/**
- * Crea una carpeta en Drive
- */
-async function createFolder(
-  name: string,
-  parentId: string | null,
-  accessToken: string
-): Promise<string> {
-  const res = await fetch(`${DRIVE_API}/files`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      name,
-      mimeType: "application/vnd.google-apps.folder",
-      parents: parentId ? [parentId] : undefined,
-    }),
+async function createFile(token: string, name: string, mimeType: string, parents?: string[]): Promise<string> {
+  const body: DriveFileBody = { name, mimeType };
+  if (parents) body.parents = parents;
+  
+  const res = await fetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
   });
-
+  if (!res.ok) throw new Error('Create file failed');
   const data = await res.json();
   return data.id;
 }
 
-/**
- * Obtiene o crea la estructura:
- * /Sistema-de-Cobros/{Cobros|Ingresos}
- */
-export async function getOrCreateDriveFolder(
-  tipo: "cobro" | "ingreso"
-): Promise<string> {
-  const accessToken = await getGoogleAccessToken();
-
-  // Carpeta raíz
-  let rootId = await findFolder("Sistema-de-Cobros", null, accessToken);
-  if (!rootId) {
-    rootId = await createFolder("Sistema-de-Cobros", null, accessToken);
-  }
-
-  const childName = tipo === "cobro" ? "Cobros" : "Ingresos";
-
-  let childId = await findFolder(childName, rootId, accessToken);
-  if (!childId) {
-    childId = await createFolder(childName, rootId, accessToken);
-  }
-
-  return childId;
-}
-
-/**
- * Sube un archivo a Drive y devuelve id + url
- */
-export async function uploadFileToDrive(
-  file: File,
-  folderId: string
-): Promise<{ fileId: string; fileUrl: string }> {
-  const accessToken = await getGoogleAccessToken();
-
-  const metadata = {
-    name: file.name,
-    parents: [folderId],
-  };
-
-  const form = new FormData();
-  form.append(
-    "metadata",
-    new Blob([JSON.stringify(metadata)], { type: "application/json" })
-  );
-  form.append("file", file);
-
-  const res = await fetch(`${UPLOAD_API}?uploadType=multipart&fields=id`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
+async function initializeSheetFormat(token: string, sheetId: string) {
+  const requests = [
+    {
+      updateCells: {
+        rows: [
+          {
+            values: [
+                { userEnteredValue: { stringValue: "Fecha" } },
+                { userEnteredValue: { stringValue: "ID Usuario" } },
+                { userEnteredValue: { stringValue: "Nombre Usuario" } },
+                { userEnteredValue: { stringValue: "Tipo" } },
+                { userEnteredValue: { stringValue: "Cobrado" } },
+                { userEnteredValue: { stringValue: "Ingresado" } },
+                { userEnteredValue: { stringValue: "Diferencia" } },
+                { userEnteredValue: { stringValue: "Evidencia (Link)" } },
+                { userEnteredValue: { stringValue: "Observaciones" } }
+            ]
+          },
+          {
+             values: [
+                { userEnteredValue: { stringValue: "TOTALES ->" } },
+                {}, {}, {},
+                { userEnteredValue: { formulaValue: "=SUM(E3:E)" } },
+                { userEnteredValue: { formulaValue: "=SUM(F3:F)" } },
+                { userEnteredValue: { formulaValue: "=SUM(G3:G)" } },
+                {}, {}
+             ]
+          }
+        ],
+        fields: "userEnteredValue",
+        start: { sheetId: 0, rowIndex: 0, columnIndex: 0 }
+      }
     },
-    body: form,
+    {
+        updateSheetProperties: {
+            properties: {
+                sheetId: 0,
+                gridProperties: { frozenRowCount: 2 }
+            },
+            fields: "gridProperties.frozenRowCount"
+        }
+    },
+    {
+        repeatCell: {
+            range: { sheetId: 0, startRowIndex: 0, endRowIndex: 2 },
+            cell: { userEnteredFormat: { textFormat: { bold: true } } },
+            fields: "userEnteredFormat.textFormat.bold"
+        }
+    }
+  ];
+  
+  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requests })
   });
-
-  const data = await res.json();
-
-  const fileId = data.id;
-  const fileUrl = `https://drive.google.com/file/d/${fileId}/view`;
-
-  return { fileId, fileUrl };
 }

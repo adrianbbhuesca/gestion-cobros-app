@@ -1,4 +1,4 @@
-import React, { ErrorInfo, ReactNode, useEffect } from 'react';
+import React, { Component, ErrorInfo, ReactNode, useEffect } from 'react';
 import { HashRouter } from 'react-router-dom';
 import { AppRouter } from './router';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
@@ -13,11 +13,14 @@ interface ErrorBoundaryState {
   error: Error | null;
 }
 
-class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  state: ErrorBoundaryState = {
-    hasError: false,
-    error: null
-  };
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = {
+      hasError: false,
+      error: null
+    };
+  }
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
     return { hasError: true, error };
@@ -80,12 +83,7 @@ const App: React.FC = () => {
 
   return (
     <ErrorBoundary>
-      {/* 
-          TECH LEAD NOTE:
-          Habilitamos las flags 'future' para eliminar las advertencias de la consola 
-          y preparar la app para la migración a React Router v7.
-      */}
-      <HashRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <HashRouter>
         <AppRouter />
       </HashRouter>
     </ErrorBoundary>

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Bell } from 'lucide-react';
-import { collection, query, where, onSnapshot, updateDoc, doc } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, orderBy, updateDoc, doc } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { useUserStore } from '../../store/user.store';
 import { Notification } from '../../types';
@@ -13,23 +13,16 @@ export const NotificationsBell: React.FC = () => {
   useEffect(() => {
     if (!user) return;
 
-    // OPTIMIZACIÓN: Eliminamos orderBy('createdAt', 'desc') de la query
-    // para evitar requerir un índice compuesto complejo en Firestore.
-    // Ordenamos en memoria ya que el volumen de notificaciones no leídas suele ser bajo.
     const q = query(
       collection(db, 'notifications'),
       where('userId', '==', user.uid),
-      where('read', '==', false)
+      where('read', '==', false),
+      orderBy('createdAt', 'desc')
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const notifs = snapshot.docs
-        .map(d => ({ id: d.id, ...d.data() } as Notification))
-        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); // Ordenamiento en cliente
-      
+      const notifs = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Notification));
       setNotifications(notifs);
-    }, (error) => {
-        console.error("Error silencioso en notificaciones:", error);
     });
 
     return () => unsubscribe();

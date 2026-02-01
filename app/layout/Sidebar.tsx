@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { LayoutDashboard, FilePlus, Shield, LogOut, X, DownloadCloud } from 'lucide-react';
 import { useUserStore } from '../../store/user.store';
@@ -8,7 +8,6 @@ import { auth } from '../../services/firebase';
 export const Sidebar: React.FC = () => {
   const { user } = useUserStore();
   const { sidebarOpen, setSidebarOpen, deferredPrompt, setDeferredPrompt, addToast } = useUIStore();
-  const [imgError, setImgError] = useState(false);
 
   const handleLogout = () => {
     auth.signOut();
@@ -103,13 +102,8 @@ export const Sidebar: React.FC = () => {
           )}
 
           <div className="flex items-center gap-3 p-3 rounded-xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 shadow-sm">
-              {user?.photoURL && !imgError ? (
-                  <img 
-                    src={user.photoURL} 
-                    alt="User" 
-                    className="w-10 h-10 rounded-full object-cover ring-2 ring-white dark:ring-gray-700" 
-                    onError={() => setImgError(true)}
-                  />
+              {user?.photoURL ? (
+                  <img src={user.photoURL} alt="User" className="w-10 h-10 rounded-full object-cover ring-2 ring-white dark:ring-gray-700" />
               ) : (
                   <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 text-white flex items-center justify-center font-bold shadow-md">
                       {user?.displayName?.charAt(0)}

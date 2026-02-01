@@ -21,14 +21,6 @@ if (missingVars.length > 0) {
   console.error(`Faltan variables de entorno críticas: ${missingVars.join(', ')}`);
 }
 
-// VALIDACIÓN CRÍTICA: Detectar si el usuario olvidó cambiar los valores de ejemplo
-const placeholderCheck = requiredEnvVars.filter(key => env[key] && (env[key].includes('tu_api_key') || env[key].includes('tu_proyecto')));
-if (placeholderCheck.length > 0) {
-    const msg = "ERROR FATAL: Parece que sigues usando los valores de ejemplo en el archivo .env (tu_api_key_aqui, etc). Debes poner tus claves reales de Firebase.";
-    console.error(msg);
-    alert(msg); // Alertar visualmente al usuario
-}
-
 const firebaseConfig = {
   apiKey: env.VITE_FIREBASE_API_KEY,
   authDomain: env.VITE_FIREBASE_AUTH_DOMAIN,
