@@ -1,56 +1,134 @@
-const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-const SCOPES = "https://www.googleapis.com/auth/drive.file";
+// services/drive.service.ts
+import { getAuth } from "firebase/auth";
 
-let accessToken: string | null = null;
+const DRIVE_API = "https://www.googleapis.com/drive/v3";
+const UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files";
 
-export const initGoogleDrive = (): Promise<void> => {
-  return new Promise((resolve, reject) => {
-    if (!window.google) {
-      reject("Google API no cargada");
-      return;
+/**
+ * Obtiene el accessToken OAuth de Google del usuario autenticado
+ */
+async function getGoogleAccessToken(): Promise<string> {
+  const auth = getAuth();
+  const user = auth.currentUser;
+
+  if (!user) {
+    throw new Error("Usuario no autenticado");
+  }
+
+  const tokenResult = await user.getIdTokenResult();
+  const providerData = user.providerData.find(
+    (p) => p.providerId === "google.com"
+  );
+
+  if (!providerData) {
+    throw new Error("El usuario no inició sesión con Google");
+  }
+
+  // @ts-expect-error Firebase expone accessToken internamente
+  const accessToken = auth.currentUser?.stsTokenManager?.accessToken;
+
+  if (!accessToken) {
+    throw new Error("No se pudo obtener accessToken de Google");
+  }
+
+  return accessToken;
+}
+
+/**
+ * Busca una carpeta por nombre dentro de un parent
+ */
+async function findFolder(
+  name: string,
+  parentId: string | null,
+  accessToken: string
+): Promise<string | null> {
+  const qParts = [
+    `mimeType='application/vnd.google-apps.folder'`,
+    `name='${name.replace("'", "\\'")}'`,
+    "trashed=false",
+  ];
+
+  if (parentId) {
+    qParts.push(`'${parentId}' in parents`);
+  }
+
+  const q = qParts.join(" and ");
+
+  const res = await fetch(
+    `${DRIVE_API}/files?q=${encodeURIComponent(q)}&fields=files(id,name)`,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
     }
+  );
 
-    window.google.accounts.oauth2
-      .initTokenClient({
-        client_id: CLIENT_ID,
-        scope: SCOPES,
-        callback: (tokenResponse) => {
-          accessToken = tokenResponse.access_token;
-          gapi.load("client", async () => {
-            await gapi.client.init({
-              discoveryDocs: [
-                "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
-              ],
-            });
-            gapi.client.setToken({ access_token: accessToken });
-            resolve();
-          });
-        },
-      })
-      .requestAccessToken();
-  });
-};
+  const data = await res.json();
+  return data.files?.[0]?.id ?? null;
+}
 
-export const createFolder = async (name: string, parentId?: string) => {
-  const res = await gapi.client.drive.files.create({
-    resource: {
+/**
+ * Crea una carpeta en Drive
+ */
+async function createFolder(
+  name: string,
+  parentId: string | null,
+  accessToken: string
+): Promise<string> {
+  const res = await fetch(`${DRIVE_API}/files`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
       name,
       mimeType: "application/vnd.google-apps.folder",
-      parents: parentId ? [parentId] : [],
-    },
-    fields: "id",
+      parents: parentId ? [parentId] : undefined,
+    }),
   });
 
-  return res.result.id!;
-};
+  const data = await res.json();
+  return data.id;
+}
 
-export const uploadFile = async (
+/**
+ * Obtiene o crea la estructura:
+ * /Sistema-de-Cobros/{Cobros|Ingresos}
+ */
+export async function getOrCreateDriveFolder(
+  tipo: "cobro" | "ingreso"
+): Promise<string> {
+  const accessToken = await getGoogleAccessToken();
+
+  // Carpeta raíz
+  let rootId = await findFolder("Sistema-de-Cobros", null, accessToken);
+  if (!rootId) {
+    rootId = await createFolder("Sistema-de-Cobros", null, accessToken);
+  }
+
+  const childName = tipo === "cobro" ? "Cobros" : "Ingresos";
+
+  let childId = await findFolder(childName, rootId, accessToken);
+  if (!childId) {
+    childId = await createFolder(childName, rootId, accessToken);
+  }
+
+  return childId;
+}
+
+/**
+ * Sube un archivo a Drive y devuelve id + url
+ */
+export async function uploadFileToDrive(
   file: File,
-  parentId: string
-): Promise<string> => {
+  folderId: string
+): Promise<{ fileId: string; fileUrl: string }> {
+  const accessToken = await getGoogleAccessToken();
+
   const metadata = {
     name: file.name,
-    parents: [parentId],
+    parents: [folderId],
   };
 
   const form = new FormData();
@@ -60,17 +138,18 @@ export const uploadFile = async (
   );
   form.append("file", file);
 
-  const res = await fetch(
-    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: form,
-    }
-  );
+  const res = await fetch(`${UPLOAD_API}?uploadType=multipart&fields=id`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: form,
+  });
 
   const data = await res.json();
-  return data.id;
-};
+
+  const fileId = data.id;
+  const fileUrl = `https://drive.google.com/file/d/${fileId}/view`;
+
+  return { fileId, fileUrl };
+}
