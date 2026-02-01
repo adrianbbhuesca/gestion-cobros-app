@@ -1,0 +1,9 @@
+{
+  "name": "Sistema de Cobros",
+  "description": "Sistema profesional de gestión de cobros e ingresos con integración a Google Drive y Sheets.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
