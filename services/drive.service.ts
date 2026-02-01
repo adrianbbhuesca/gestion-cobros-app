@@ -1,36 +1,76 @@
-import { getFunctions, httpsCallable } from "firebase/functions";
-import { app } from "./firebase";
+const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+const SCOPES = "https://www.googleapis.com/auth/drive.file";
 
-/**
- * Inicializa Firebase Functions
- * Usa la app ya creada en firebase.ts
- */
-const functions = getFunctions(app);
+let accessToken: string | null = null;
 
-/**
- * Referencia a la Cloud Function
- * IMPORTANTE: el nombre DEBE coincidir con el export del backend
- */
-const createDriveStructure = httpsCallable<
-  { tipo: "cobro" | "ingreso"; recordId: string },
-  { carpetaId: string }
->(functions, "createDriveStructureFn");
+export const initGoogleDrive = (): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    if (!window.google) {
+      reject("Google API no cargada");
+      return;
+    }
 
-/**
- * Inicializa la estructura de Google Drive para un registro
- * - Crea carpeta raíz si no existe
- * - Crea subcarpeta cobro/ingreso
- * - Crea carpeta del registro
- */
-export async function initDriveForRecord(
-  tipo: "cobro" | "ingreso",
-  recordId: string
-): Promise<{ carpetaId: string }> {
-  try {
-    const res = await createDriveStructure({ tipo, recordId });
-    return res.data;
-  } catch (error) {
-    console.error("Error creando estructura en Drive", error);
-    throw new Error("No se pudo inicializar Drive");
-  }
-}
+    window.google.accounts.oauth2
+      .initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPES,
+        callback: (tokenResponse) => {
+          accessToken = tokenResponse.access_token;
+          gapi.load("client", async () => {
+            await gapi.client.init({
+              discoveryDocs: [
+                "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+              ],
+            });
+            gapi.client.setToken({ access_token: accessToken });
+            resolve();
+          });
+        },
+      })
+      .requestAccessToken();
+  });
+};
+
+export const createFolder = async (name: string, parentId?: string) => {
+  const res = await gapi.client.drive.files.create({
+    resource: {
+      name,
+      mimeType: "application/vnd.google-apps.folder",
+      parents: parentId ? [parentId] : [],
+    },
+    fields: "id",
+  });
+
+  return res.result.id!;
+};
+
+export const uploadFile = async (
+  file: File,
+  parentId: string
+): Promise<string> => {
+  const metadata = {
+    name: file.name,
+    parents: [parentId],
+  };
+
+  const form = new FormData();
+  form.append(
+    "metadata",
+    new Blob([JSON.stringify(metadata)], { type: "application/json" })
+  );
+  form.append("file", file);
+
+  const res = await fetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: form,
+    }
+  );
+
+  const data = await res.json();
+  return data.id;
+};
