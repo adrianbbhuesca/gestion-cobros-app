@@ -11,23 +11,10 @@
         "source": "**",
         "destination": "/index.html"
       }
-    ],
-    "headers": [
-      {
-        "source": "/sw.js",
-        "headers": [
-          {
-            "key": "Cache-Control",
-            "value": "no-cache"
-          }
-        ]
-      }
     ]
   },
   "firestore": {
-    "rules": "firestore.rules"
-  },
-  "storage": {
-    "rules": "storage.rules"
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
   }
 }
